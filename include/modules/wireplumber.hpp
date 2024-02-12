@@ -1,12 +1,12 @@
 #pragma once
 
+#include "ALabel.hpp"
+
 #include <json/json.h>
 #include <wp/wp.h>
 
 #include <cstdint>
 #include <string>
-
-#include "ALabel.hpp"
 
 namespace waybar::modules {
 

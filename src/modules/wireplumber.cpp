@@ -8,7 +8,6 @@ bool isValidNodeId(uint32_t id) { return id > 0 && id < G_MAXUINT32; }
 waybar::modules::Wireplumber::Wireplumber(const std::string& id, const Json::Value& config)
     : ALabel(config, "wireplumber", id, "{volume}%"),
       wp_core_(nullptr),
-      apis_(nullptr),
       om_(nullptr),
       mixer_api_(nullptr),
       def_nodes_api_(nullptr),
@@ -20,7 +19,6 @@ waybar::modules::Wireplumber::Wireplumber(const std::string& id, const Json::Val
       node_id_(0) {
   wp_init(WP_INIT_PIPEWIRE);
   wp_core_ = wp_core_new(NULL, NULL);
-  apis_ = g_ptr_array_new_with_free_func(g_object_unref);
   om_ = wp_object_manager_new();
 
   prepare();
@@ -38,8 +36,6 @@ waybar::modules::Wireplumber::Wireplumber(const std::string& id, const Json::Val
 
   g_signal_connect_swapped(om_, "installed", (GCallback)onObjectManagerInstalled, this);
 
-  activatePlugins();
-
   dp.emit();
 
   event_box_.add_events(Gdk::SCROLL_MASK | Gdk::SMOOTH_SCROLL_MASK);
@@ -48,7 +44,6 @@ waybar::modules::Wireplumber::Wireplumber(const std::string& id, const Json::Val
 
 waybar::modules::Wireplumber::~Wireplumber() {
   wp_core_disconnect(wp_core_);
-  g_clear_pointer(&apis_, g_ptr_array_unref);
   g_clear_object(&om_);
   g_clear_object(&wp_core_);
   g_clear_object(&mixer_api_);
@@ -220,29 +215,21 @@ void waybar::modules::Wireplumber::onObjectManagerInstalled(waybar::modules::Wir
                            self);
 }
 
-void waybar::modules::Wireplumber::onPluginActivated(WpObject* p, GAsyncResult* res,
-                                                     waybar::modules::Wireplumber* self) {
-  auto plugin_name = wp_plugin_get_name(WP_PLUGIN(p));
-  spdlog::debug("[{}]: onPluginActivated: {}", self->name_, plugin_name);
+void waybar::modules::Wireplumber::onPluginLoaded(WpCore* core, GAsyncResult* res,
+                                                  waybar::modules::Wireplumber* self) {
   g_autoptr(GError) error = NULL;
 
-  if (!wp_object_activate_finish(p, res, &error)) {
+  auto plugin_name = wp_plugin_get_name(WP_PLUGIN(core));
+  spdlog::debug("[{}]: onPluginActivated: {}", self->name_, plugin_name);
+
+  gboolean success = wp_core_load_component_finish(core, res, &error);
+  if (!success) {
     spdlog::error("[{}]: error activating plugin: {}", self->name_, error->message);
     throw std::runtime_error(error->message);
   }
 
   if (--self->pending_plugins_ == 0) {
     wp_core_install_object_manager(self->wp_core_, self->om_);
-  }
-}
-
-void waybar::modules::Wireplumber::activatePlugins() {
-  spdlog::debug("[{}]: activating plugins", name_);
-  for (uint16_t i = 0; i < apis_->len; i++) {
-    WpPlugin* plugin = static_cast<WpPlugin*>(g_ptr_array_index(apis_, i));
-    pending_plugins_++;
-    wp_object_activate(WP_OBJECT(plugin), WP_PLUGIN_FEATURE_ENABLED, NULL,
-                       (GAsyncReadyCallback)onPluginActivated, this);
   }
 }
 
@@ -256,22 +243,15 @@ void waybar::modules::Wireplumber::loadRequiredApiModules() {
   spdlog::debug("[{}]: loading required modules", name_);
   g_autoptr(GError) error = NULL;
 
-  if (!wp_core_load_component(wp_core_, "libwireplumber-module-default-nodes-api", "module", NULL,
-                              &error)) {
-    throw std::runtime_error(error->message);
-  }
+  pending_plugins_++;
+  wp_core_load_component(wp_core_, "libwireplumber-module-default-nodes-api", "module",
+                         NULL, NULL, NULL, (GAsyncReadyCallback)onPluginLoaded,
+                         this);
 
-  if (!wp_core_load_component(wp_core_, "libwireplumber-module-mixer-api", "module", NULL,
-                              &error)) {
-    throw std::runtime_error(error->message);
-  }
-
-  g_ptr_array_add(apis_, wp_plugin_find(wp_core_, "default-nodes-api"));
-  g_ptr_array_add(apis_, ({
-                    WpPlugin* p = wp_plugin_find(wp_core_, "mixer-api");
-                    g_object_set(G_OBJECT(p), "scale", 1 /* cubic */, NULL);
-                    p;
-                  }));
+  pending_plugins_++;
+  wp_core_load_component(wp_core_, "libwireplumber-module-mixer-api", "module",
+                         NULL, NULL, NULL, (GAsyncReadyCallback)onPluginLoaded,
+                         this);
 }
 
 auto waybar::modules::Wireplumber::update() -> void {

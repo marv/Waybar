@@ -1,5 +1,6 @@
 #include "modules/wireplumber.hpp"
 
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
 bool isValidNodeId(uint32_t id) { return id > 0 && id < G_MAXUINT32; }
